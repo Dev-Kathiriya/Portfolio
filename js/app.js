@@ -197,4 +197,317 @@
   backToTop?.addEventListener("click", () => {
     window.scrollTo({ top: 0, behavior: "smooth" });
   });
+
+  const initInfiniteCarousel = ({
+    root,
+    track,
+    itemSelector,
+    ariaLabel,
+    itemLabel,
+  }) => {
+    if (!root || !track) return;
+
+    const mql = window.matchMedia("(max-width: 720px)");
+    const reduceMotionMql = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const AUTO_INTERVAL = 5000;
+    const RESUME_DELAY = 7000;
+    const SCROLL_END_DEBOUNCE = 140;
+    const CLONE_CLASS = "carousel-clone";
+
+    const getRealItems = () =>
+      [...track.querySelectorAll(itemSelector)].filter(
+        (item) => !item.classList.contains(CLONE_CLASS)
+      );
+
+    let realItems = getRealItems();
+    if (realItems.length === 0) return;
+
+    let domCards = [...realItems];
+    let cloneHead = null;
+    let cloneTail = null;
+    let activeDomIndex = 0;
+    let dotsContainer = null;
+    let dots = [];
+    let autoTimer = null;
+    let resumeTimer = null;
+    let scrollDebounce = null;
+    let userInteracting = false;
+    let isAdjusting = false;
+
+    const inCarouselMode = () => mql.matches;
+    const hasClones = () => Boolean(cloneHead && cloneTail);
+    const realCount = () => realItems.length;
+    const logicalIndex = () =>
+      hasClones() ? activeDomIndex - 1 : activeDomIndex;
+
+    const setActiveDot = (index) => {
+      dots.forEach((dot, i) => {
+        dot.classList.toggle("is-active", i === index);
+        dot.setAttribute("aria-selected", i === index ? "true" : "false");
+      });
+    };
+
+    const setupClones = () => {
+      if (cloneHead) {
+        cloneHead.remove();
+        cloneHead = null;
+      }
+      if (cloneTail) {
+        cloneTail.remove();
+        cloneTail = null;
+      }
+
+      realItems = getRealItems();
+      domCards = [...realItems];
+
+      if (!inCarouselMode() || realItems.length < 2) return;
+
+      cloneHead = realItems[realItems.length - 1].cloneNode(true);
+      cloneTail = realItems[0].cloneNode(true);
+      [cloneHead, cloneTail].forEach((clone) => {
+        clone.classList.add(CLONE_CLASS);
+        clone.setAttribute("aria-hidden", "true");
+        clone.querySelectorAll("a, button").forEach((el) =>
+          el.setAttribute("tabindex", "-1")
+        );
+      });
+
+      track.insertBefore(cloneHead, realItems[0]);
+      track.appendChild(cloneTail);
+      domCards = [cloneHead, ...realItems, cloneTail];
+    };
+
+    const logicalToDomIndex = (index) => (hasClones() ? index + 1 : index);
+
+    const findClosestDomIndex = () => {
+      const gridRect = track.getBoundingClientRect();
+      const center = gridRect.left + gridRect.width / 2;
+      let closestDom = 0;
+      let closestDistance = Infinity;
+
+      domCards.forEach((card, i) => {
+        const cardRect = card.getBoundingClientRect();
+        const cardCenter = cardRect.left + cardRect.width / 2;
+        const distance = Math.abs(cardCenter - center);
+        if (distance < closestDistance) {
+          closestDistance = distance;
+          closestDom = i;
+        }
+      });
+
+      return closestDom;
+    };
+
+    const scrollToDom = (domIndex, smooth = true) => {
+      const card = domCards[domIndex];
+      if (!card) return;
+
+      const gridRect = track.getBoundingClientRect();
+      const cardRect = card.getBoundingClientRect();
+      const cardLeftInContent =
+        cardRect.left - gridRect.left + track.scrollLeft;
+      const left =
+        cardLeftInContent - (gridRect.width - cardRect.width) / 2;
+
+      track.scrollTo({
+        left,
+        behavior: smooth ? "smooth" : "auto",
+      });
+    };
+
+    const jumpToDom = (domIndex) => {
+      isAdjusting = true;
+      clearTimeout(scrollDebounce);
+      track.classList.add("is-adjusting");
+      activeDomIndex = domIndex;
+      scrollToDom(domIndex, false);
+      setActiveDot(logicalIndex());
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          track.classList.remove("is-adjusting");
+          isAdjusting = false;
+        });
+      });
+    };
+
+    const settle = () => {
+      if (!inCarouselMode() || domCards.length === 0 || isAdjusting) return;
+
+      const closestDom = findClosestDomIndex();
+      const lastDom = domCards.length - 1;
+
+      if (hasClones() && closestDom === 0) {
+        jumpToDom(realCount());
+        return;
+      }
+
+      if (hasClones() && closestDom === lastDom) {
+        jumpToDom(1);
+        return;
+      }
+
+      activeDomIndex = closestDom;
+      setActiveDot(logicalIndex());
+    };
+
+    const moveBy = (offset) => {
+      if (!inCarouselMode() || domCards.length === 0 || isAdjusting) return;
+      const currentDom = findClosestDomIndex();
+      const nextDom = currentDom + offset;
+      if (nextDom < 0 || nextDom > domCards.length - 1) return;
+      scrollToDom(nextDom, true);
+    };
+
+    const goToLogical = (index, smooth = true) => {
+      if (index < 0 || index >= realCount()) return;
+      activeDomIndex = logicalToDomIndex(index);
+      scrollToDom(activeDomIndex, smooth);
+      setActiveDot(index);
+    };
+
+    const scheduleSettle = () => {
+      if (!inCarouselMode() || isAdjusting) return;
+      clearTimeout(scrollDebounce);
+      scrollDebounce = setTimeout(settle, SCROLL_END_DEBOUNCE);
+    };
+
+    if ("onscrollend" in window) {
+      track.addEventListener("scrollend", settle, { passive: true });
+    }
+    track.addEventListener("scroll", scheduleSettle, { passive: true });
+
+    const buildDots = () => {
+      if (dotsContainer) {
+        dotsContainer.remove();
+        dotsContainer = null;
+        dots = [];
+      }
+      if (!inCarouselMode()) return;
+
+      dotsContainer = document.createElement("div");
+      dotsContainer.className = "carousel-dots";
+      dotsContainer.setAttribute("role", "tablist");
+      dotsContainer.setAttribute("aria-label", ariaLabel);
+
+      realItems.forEach((_, i) => {
+        const dot = document.createElement("button");
+        dot.type = "button";
+        dot.className = "carousel-dot";
+        dot.setAttribute("role", "tab");
+        dot.setAttribute("aria-label", itemLabel(i, realItems.length));
+        dot.addEventListener("click", () => {
+          userInteracting = true;
+          goToLogical(i, true);
+          pauseAuto();
+        });
+        dotsContainer.appendChild(dot);
+        dots.push(dot);
+      });
+
+      root.appendChild(dotsContainer);
+      setActiveDot(logicalIndex());
+    };
+
+    const stopAuto = () => {
+      if (autoTimer) {
+        clearInterval(autoTimer);
+        autoTimer = null;
+      }
+    };
+
+    const startAuto = () => {
+      stopAuto();
+      if (!inCarouselMode() || reduceMotionMql.matches || realCount() < 2) return;
+      autoTimer = setInterval(() => {
+        if (userInteracting || isAdjusting) return;
+        moveBy(1);
+      }, AUTO_INTERVAL);
+    };
+
+    const pauseAuto = () => {
+      stopAuto();
+      clearTimeout(resumeTimer);
+      resumeTimer = setTimeout(() => {
+        userInteracting = false;
+        startAuto();
+      }, RESUME_DELAY);
+    };
+
+    const markInteracting = () => {
+      userInteracting = true;
+      pauseAuto();
+    };
+
+    track.addEventListener("touchstart", markInteracting, { passive: true });
+    track.addEventListener("pointerdown", markInteracting);
+    track.addEventListener("wheel", markInteracting, { passive: true });
+
+    const init = () => {
+      setupClones();
+      buildDots();
+
+      if (inCarouselMode()) {
+        activeDomIndex = logicalToDomIndex(0);
+        requestAnimationFrame(() => {
+          scrollToDom(activeDomIndex, false);
+          setActiveDot(0);
+          startAuto();
+        });
+      } else {
+        activeDomIndex = 0;
+        stopAuto();
+        clearTimeout(resumeTimer);
+      }
+    };
+
+    init();
+
+    const handleMqlChange = () => init();
+    if (mql.addEventListener) {
+      mql.addEventListener("change", handleMqlChange);
+    } else if (mql.addListener) {
+      mql.addListener(handleMqlChange);
+    }
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        stopAuto();
+      } else if (inCarouselMode()) {
+        startAuto();
+      }
+    });
+
+    if ("IntersectionObserver" in window) {
+      const visibilityObserver = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((entry) => {
+            if (!inCarouselMode()) return;
+            if (entry.isIntersecting) {
+              if (!userInteracting) startAuto();
+            } else {
+              stopAuto();
+            }
+          });
+        },
+        { threshold: 0.25 }
+      );
+      visibilityObserver.observe(root);
+    }
+  };
+
+  initInfiniteCarousel({
+    root: document.querySelector("#apps .app-carousel"),
+    track: document.querySelector("#apps .app-grid"),
+    itemSelector: ".app-card",
+    ariaLabel: "Apps carousel pagination",
+    itemLabel: (index, total) => `Show app ${index + 1} of ${total}`,
+  });
+
+  initInfiniteCarousel({
+    root: document.querySelector("#projects .project-carousel"),
+    track: document.querySelector("#projects .project-grid"),
+    itemSelector: ".project-card",
+    ariaLabel: "Projects carousel pagination",
+    itemLabel: (index, total) => `Show project ${index + 1} of ${total}`,
+  });
 })();
